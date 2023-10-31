@@ -1,6 +1,6 @@
   module kei_icecommon
 
-    use kei_parameters
+    !use kei_parameters
     ! f2py won't allow this, so specified in two places ... make sure nni = z_max_ice, nns/nnfs = z_max_snow !!
     ! use sia2_parameters, only: z_max_ice, z_max_snow
 

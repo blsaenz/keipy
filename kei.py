@@ -21,7 +21,6 @@ import os,sys,shutil,csv,pickle,math,time,datetime
 from calendar import isleap
 import numpy as np
 from numpy import asfortranarray,ascontiguousarray
-import h5py
 #from numba import jit
 #from netCDF4 import date2num # use these with date2num(dt,'days since %i-01-01'%year) to convert!
 import xarray as xr
@@ -31,6 +30,8 @@ file_dir = os.path.dirname(__file__)
 sys.path.append(file_dir)
 import kei_util as util
 from kei_util import ecosys_tracers,ma_tracers,forcing_idx,init_vars_ocn,init_vars_eco
+from kei_util import ocn_output_vars,eco_output_vars,ice_output_vars,output_var_data
+from kei_util import output_var_data_meta
 
 #try:
 from f90 import kei
@@ -41,70 +42,8 @@ from f90 import kei
 
 nf = len(forcing_idx)
 
-
 grid_vars = ['dm','hm','zm','f_time'] # midpoint depth of cells, at least needed for xarray
 
-nz_dim = 'zm'
-t_dim = 'f_time'
-output_vars = { # single dimension output vars
-               'time': {'units':'day from time_start',
-                        'dim':None},
-               'hmx': {'units':'m',
-                       'dim':None},
-               'zml': {'units':'m',
-                       'dim':None},
-                # nz-dimension vars
-               'wU': {'units':'m',
-                       'dim':nz_dim},
-               'wV': {'units':'m',
-                       'dim':nz_dim},
-               'wW': {'units':'m',
-                       'dim':nz_dim},
-               'wT': {'units':'m',
-                       'dim':nz_dim},
-               'wS': {'units':'m',
-                       'dim':nz_dim},
-               'wB': {'units':'m',
-                       'dim':nz_dim},
-               'Tprev': {'units':'C',
-                       'dim':nz_dim},
-               'Sprev': {'units':'psu',
-                       'dim':nz_dim},
-               'tot_prod': {'units':'',
-                       'dim':nz_dim},
-               'sp_Fe_lim': {'units':'',
-                       'dim':nz_dim},
-               'sp_N_lim': {'units':'',
-                       'dim':nz_dim},
-               'sp_P_lim': {'units':'',
-                       'dim':nz_dim},
-               'sp_light_lim': {'units':'',
-                       'dim':nz_dim},
-               'diat_Fe_lim': {'units':'',
-                       'dim':nz_dim},
-               'diat_N_lim': {'units':'',
-                       'dim':nz_dim},
-               'diat_P_lim': {'units':'',
-                       'dim':nz_dim},
-               'diat_Si_lim': {'units':'',
-                       'dim':nz_dim},
-               'diat_light_lim': {'units':'',
-                       'dim':nz_dim},
-               'graze_sp': {'units':'',
-                       'dim':nz_dim},
-               'graze_diat': {'units':'',
-                       'dim':nz_dim},
-               'graze_tot': {'units':'',
-                       'dim':nz_dim},
-               'km': {'units':'',
-                       'dim':nz_dim},
-               'ks': {'units':'',
-                       'dim':nz_dim},
-               'kt': {'units':'',
-                       'dim':nz_dim},
-               'ghat': {'units':'',
-                       'dim':nz_dim},
-              }
 
 # fantastic thing to have around ...
 month_doy = [1,32,60,91,121,152,182,213,244,274,305,335]
@@ -154,8 +93,9 @@ def kei_forcing(nc_file = None, f_dict = {}, start_date=None, freq=None, legacy_
             else:
                 f_time_len = len(ds_in['tz'][...])
                 f_time = xr.cftime_range(start=start_date,periods=f_time_len,freq=freq)
-                zm = ds_in['zm'][0:-1]
+                zm = ds_in['zm'][0:-1].data
             ds = util.reindex_forcing(ds_in,f_time,zm)
+            ds['msl'][...] = ds['msl'][...] * 0.01  # many old forcing netCDF files are in Pa, meed mbar
         else:
             ds = ds_in
     else:
@@ -174,26 +114,131 @@ def kei_forcing(nc_file = None, f_dict = {}, start_date=None, freq=None, legacy_
 
 class kei_output(object):
 
+    flx_vars = ['fatm','fao','fai','fio','focn']
 
-    def __init__(self,out_vars,f_time,zm):
+    def __init__(self,out_vars,f_time,zm,nflx,nni,nns):
+
+        self.out_vars = out_vars
 
         self.out_ds = xr.Dataset()
         self.out_ds['f_time'] = ('f_time'),f_time
         self.out_ds['zm'] = ('zm'),zm
+        self.out_ds['zm'].attrs['units'] = 'm'
+        self.out_ds['zm'].attrs['long_name'] = 'layer midpoint depth'
+        self.out_ds['nni'] = ('nni'),np.arange(nni,dtype=np.int)
+        self.out_ds['nns'] = ('nns'),np.arange(nns,dtype=np.int)
+        self.out_ds['nflx'] = ('nflx'),np.arange(nflx,dtype=np.int)
+        # add dimension var meta
+        for v in ['zm','nni','nns','nflx']:
+            self.out_ds[v].attrs['units'] = output_var_data_meta[v]['units']
+            self.out_ds[v].attrs['long_name'] = output_var_data_meta[v]['long_name']
+        for d in ['nni','nns']:
+            self.out_ds[d].attrs['positive'] = 'down'
+        self.out_ds['zm'].attrs['positive'] = 'up'
+
         len_f_time = len(f_time)
         len_zm = len(zm)
 
+
+
         # setup lists of the exposed numpy arrays for potential usage in numba-optimized
         # methods
-        self.vars_1D = {}
-        self.vars_2D = {}
-        for v in out_vars:
-            if output_vars[v]['dim'] is None:
+
+        # self.vars_1D = {}
+        # self.vars_int = {}
+        # self.vars_2D = {}
+        # self.vars_ice = {}
+        # self.vars_snow = {}
+        # for v in self.out_vars:
+        #     if output_var_data[v]['dim'] is None:
+        #         self.out_ds[v] = ('f_time'),np.full(len_f_time,np.nan,np.float32)
+        #         self.vars_1D[v] = self.out_ds[v].__array__()  # is this the best way?
+        #     elif output_vars[v]['dim'] == 'int':
+        #         self.out_ds[v] = ('f_time'),np.full(len_f_time,0,np.int32)
+        #         self.vars_int[v] = self.out_ds[v].__array__()  # is this the best way?
+        #     elif output_vars[v]['dim'] == 'zm':
+        #         self.out_ds[v] = ('zm','f_time'),np.full((len_zm,len_f_time),np.nan,np.float32)
+        #         self.vars_2D[v] = self.out_ds[v].__array__()  # is this the best way?
+        #     elif output_vars[v]['dim'] == 'nni':
+        #         self.out_ds[v] = ('nni','f_time'),np.full((nni,len_f_time),np.nan,np.float32)
+        #         self.vars_ice[v] = self.out_ds[v].__array__()  # is this the best way?
+        #     elif output_vars[v]['dim'] == 'nns':
+        #         self.out_ds[v] = ('nns','f_time'),np.full((nns,len_f_time),np.nan,np.float32)
+        #         self.vars_snow[v] = self.out_ds[v].__array__()  # is this the best way?
+
+        # classify output variables so we can make the right fortran calls to record them
+        self.vars_1D = []
+        self.vars_int = []
+        self.vars_2D = []
+        self.vars_ice = []
+        self.vars_snow = []
+        for v in self.out_vars:
+            if output_var_data[v]['dim'] is None:
                 self.out_ds[v] = ('f_time'),np.full(len_f_time,np.nan,np.float32)
-                self.vars_1D[v] = self.out_ds[v].__array__()  # is this the best way?
+                self.vars_1D.append(v)
+            elif output_var_data[v]['dim'] == 'int':
+                self.out_ds[v] = ('f_time'),np.full(len_f_time,0,np.int32)
+                self.vars_int.append(v)
             else:
-                self.out_ds[v] = ('zm','f_time'),np.full((len_zm,len_f_time),np.nan,np.float32)
-                self.vars_2D[v] = self.out_ds[v].__array__()  # is this the best way?
+                if output_var_data[v]['dim'] == 'zm':
+                    self.vars_2D.append(v)
+                    self.out_ds[v] = ('zm', 'f_time'), np.full((len_zm, len_f_time),np.nan,np.float32)
+                elif output_var_data[v]['dim'] == 'nni':
+                    self.vars_ice.append(v)
+                    self.out_ds[v] = ('nni', 'f_time'), np.full((nni, len_f_time),np.nan,np.float32)
+                elif output_var_data[v]['dim'] == 'nns':
+                    self.vars_snow.append(v)
+                    self.out_ds[v] = ('nns', 'f_time'), np.full((nns, len_f_time), np.nan, np.float32)
+            self.out_ds[v].attrs['units'] = output_var_data_meta[v]['units']
+            self.out_ds[v].attrs['long_name'] = output_var_data_meta[v]['long_name']
+
+    def store_tracers(self,Vsave,Tsave,Flxsave,leco):
+        self.leco=leco
+
+        print('Storing Fluxes...')
+        for i,fv in enumerate(self.flx_vars):
+            self.out_ds[fv] = ('nflx','f_time'),Flxsave[:,i,:]
+            self.out_ds[fv].attrs['units'] = output_var_data_meta[fv]['units']
+            self.out_ds[fv].attrs['long_name'] = output_var_data_meta[fv]['long_name']
+        print('Storing Tracers...')
+        self.out_ds['T'] = ('zm', 'f_time'), Tsave[:, 0, :]
+        self.out_ds['T']['units'] = 'C'
+        self.out_ds['S'] = ('zm', 'f_time'), Tsave[:, 1, :]
+        self.out_ds['S']['units'] = 'psu'
+        for i,fv in enumerate(['T','S']):
+            self.out_ds[fv].attrs['units'] = output_var_data_meta[fv]['units']
+            self.out_ds[fv].attrs['long_name'] = output_var_data_meta[fv]['long_name']
+
+        if leco:
+            for fv,fvd in ecosys_tracers.items():
+                self.out_ds[fv] = ('zm','f_time'),Tsave[:,fvd['idx']+2,:]
+                self.out_ds[fv].attrs['units'] = output_var_data_meta[fv]['units']
+                self.out_ds[fv].attrs['long_name'] = output_var_data_meta[fv]['long_name']
+
+    def store_step_outvars(self,kei,nt):
+
+        # for v, arr in output.vars_1D.items():
+        #     arr[nt] = kei.link.get_data_real(v)
+        # for v, arr in output.vars_2D.items():
+        #     arr[0:nz, nt] = kei.link.get_nz_data(v)
+        # for v, arr in output.vars_ice.items():
+        #     arr[0:nni, nt] = kei.link.get_data_ice(v)
+        # for v, arr in output.vars_snow.items():
+        #     arr[0:nns, nt] = kei.link.get_data_snow(v)
+        # for v, arr in output.vars_int.items():
+        #     arr[nt] = kei.link.get_data_int(v)
+
+        for v in self.vars_1D:
+            self.out_ds[v][nt] = kei.link.get_data_real(v)
+        for v in self.vars_2D:
+            self.out_ds[v][:,nt] = kei.link.get_nz_data(v)
+        for v in self.vars_ice:
+            self.out_ds[v][:,nt] = kei.link.get_ice_data(v)
+        for v in self.vars_snow:
+            self.out_ds[v][:,nt] = kei.link.get_snow_data(v)
+        for v in self.vars_int:
+            self.out_ds[v][nt] = kei.link.get_data_int(v)
+
 
     def write(self,out_filepath,Finterp,params):
 
@@ -203,15 +248,30 @@ class kei_output(object):
         # write KEI parameters, run parameters, any config we can think of
 
 
-        # copy code, forcing F0 too? if available?
-
+        # add compatibility vars for matlab plotting routines
+        self.out_ds['hour'] = self.out_ds['f_time'].dt.hour / 24.0
+        day = self.out_ds['f_time'].dt.day + self.out_ds['hour']
+        #days must be increasing always, above 365
+        day_add = 0
+        nt = len(self.out_ds['hour'])
+        seq_days = np.zeros(nt)
+        seq_days[0] = day[0]
+        for i in range(1,nt):
+            if (day[i] - day[i-1]) < 0:
+                day_add = int(seq_days[i-1])
+            seq_days[i] = day[i] + day_add
+        self.out_ds['day'] = seq_days
 
         # add forcing variables to output dataset
         for v in forcing_idx.keys():
             self.out_ds[v] = Finterp[v]
 
         # create encodings
-        compress_vars = list(self.vars_1D.keys()) + list(self.vars_2D.keys()) + list(forcing_idx.keys())
+        #compress_vars = list(self.vars_1D.keys()) + list(self.vars_2D.keys()) + list(forcing_idx.keys()) + \
+        #                list(self.vars_ice.keys()) + list(self.vars_snow.keys()) + list(self.vars_flx.keys())
+        compress_vars = self.out_vars + list(forcing_idx.keys()) + ['T','S'] + self.flx_vars
+        if self.leco:
+            compress_vars += list(ecosys_tracers.keys())
         encoding = {}
         for v in compress_vars:
             encoding[v] = {"dtype":np.float32,"zlib": True, "complevel": 4}
@@ -256,16 +316,18 @@ class kei_simulation(object):
           self.t_end = t_end
 
 
-    def compute(self,params,output_path,out_vars=None):
+    def compute(self,params,output_path,out_vars=None,run_name='keipy'):
 
         # recompile fortran module if requested, then re-import kei
         # .....  to do
 
         # get instance of kei, perform parameter init, and query dimensions
         kei.link.kei_param_init()
-        nvel = kei.kei_parameters.nvel  # total number of tracers/scalers
+        nvel = kei.kei_parameters.nvel  # total number of water velocities (2)
         nsclr = kei.kei_parameters.nsclr  # total number of tracers/scalers
         nsflxs = kei.kei_parameters.nsflxs  # total number of tracers/scalers
+        nni = kei.kei_icecommon.nni  # total number of ice layers
+        nns = kei.kei_icecommon.nns  # total number of snow layers
         nz = kei.kei_parameters.nz
 
         # prepare & interpolate forcing
@@ -318,20 +380,32 @@ class kei_simulation(object):
         # np.savetxt(r'/Users/blsaenz/Projects/git/keipy/test_data/dm_savetxt.txt',self.F0['dm'][...])
         # np.savetxt(r'/Users/blsaenz/Projects/git/keipy/test_data/hm_savetxt.txt',self.F0['hm'][...])
         # np.savetxt(r'/Users/blsaenz/Projects/git/keipy/test_data/zm_savetxt.txt',self.F0['zm'][...])
-        np.savetxt(r'/Users/blsaenz/Projects/git/keipy/test_data/X_savetxt.txt',np.transpose(Tracers))
-        np.savetxt(r'/Users/blsaenz/Projects/git/keipy/test_data/U_savetxt.txt',np.transpose(Velocity))
+        #np.savetxt(r'/Users/blsaenz/Projects/git/keipy/test_data/X_savetxt.txt',np.transpose(Tracers))
+        #np.savetxt(r'/Users/blsaenz/Projects/git/keipy/test_data/U_savetxt.txt',np.transpose(Velocity))
 
         # initialize
         kei.link.kei_compute_init()
 
         # init output
-        self.output_path = output_path
-        self.out_vars = output_vars.keys() if out_vars is None else out_vars
-        if not os.path.exists(output_path):
-            os.mkdir(output_path)
-        #else:
-        #  raise ValueError('KEI output path exists!',output_path)
-        output = kei_output(self.out_vars,Finterp['f_time'][...],self.F0['zm'][...])
+        now_str = datetime.datetime.now().strftime('%Y-%m-%d_%H%M%S')
+        self.output_path = os.path.join(output_path,run_name + '_' + now_str)
+        self.out_vars = list(output_var_data.keys()) if out_vars is None else out_vars
+        if not os.path.exists(self.output_path):
+            os.mkdir(self.output_path)
+        else:
+            raise ValueError('KEI output path exists!',self.output_path)
+        output = kei_output(self.out_vars,Finterp['f_time'].data,self.F0['zm'].data,nsflxs,
+                            nni=nni,nns=nns)
+
+        # copy code
+        shutil.copytree(os.path.dirname(__file__),os.path.join(self.output_path,'code'))
+
+        # write option to txt and pickle
+        params_csv = os.path.join(self.output_path,run_name+'_keipy_params.csv')
+        with open(params_csv,"w",newline='', encoding='utf-8') as csvfile:
+            w = csv.writer(csvfile)
+            for key, val in params.p.items():
+                w.writerow([key, val])
 
         # main loop
         for nt,time in enumerate(Finterp['f_time']):
@@ -343,26 +417,23 @@ class kei_simulation(object):
             kei.link.kei_compute_step(nt)
 
             # store step data
-            Fluxes = kei.link.get_fluxes()
-            Velocity,Tracers = kei.link.get_tracers()
-            Vsave[...,nt] = Velocity
-            Tsave[...,nt] = Tracers
-            Flxsave[...,nt] = Fluxes
-            for v,arr in output.vars_1D.items():
-                arr[nt] = kei.link.get_data_real(v)
-            for v,arr in output.vars_2D.items():
-                arr[0:nz,nt] = kei.link.get_nz_data(v)
+            #Fluxes = kei.link.get_fluxes()
+            Flxsave[...,nt] = kei.link.get_fluxes()
+            #Velocity,Tracers = kei.link.get_tracers()
+            Vsave[...,nt],Tsave[...,nt] = kei.link.get_tracers()
+            output.store_step_outvars(kei,nt)
 
         # write output netCDF file
-        outfile = os.path.join(output_path,output_path+'.nc')
+        output.store_tracers(Vsave,Tsave,Flxsave,params.p['leco'])
+        outfile = os.path.join(self.output_path,run_name+'.nc')
+        print('Saving KEI output:',outfile)
         output.write(outfile,Finterp,params)
-
 
 
 if __name__ == '__main__':
 
     params = kei_parameters()
-    kf_ds = kei_forcing(r'/Users/blsaenz/KEI_run/DATA/kf_200_100_2000.nc',start_date='2000-01-01', freq='H',legacy_nc=True)
-    kf_ds['msl'][...] = kf_ds['msl'][...] * 0.01 # many old forcing netCDF files are in Pa, meed mbar
+    kf_ds = kei_forcing(r'/Users/blsaenz/KEI_run/DATA1/kf_200_100_2000.nc',start_date='2000-01-01', freq='H',legacy_nc=True)
     k = kei_simulation(kf_ds,t_start='2000-01-15',t_end='2000-08-15')
-    k.compute(params,r'/Users/blsaenz/temp/keipy_output/keipytest1')
+    k.compute(params,r'/Users/blsaenz/temp/keipy_output',run_name='keipytest5')
+

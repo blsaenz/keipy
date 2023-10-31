@@ -1,4 +1,4 @@
-
+ 
     SUBROUTINE calflx(jptr)
 
 !     Calculate atm fluxes at dtcal/2  into sflux(n,i,0), i=1,3

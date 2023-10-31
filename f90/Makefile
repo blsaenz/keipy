@@ -1,7 +1,7 @@
 
 # set compile environment
 # ----------------------------------------------------------------------
-FC = "gfortran-9"
+FC = "gfortran"
 
 # determine compile options from environment set above
 # ----------------------------------------------------------------------
@@ -16,7 +16,7 @@ ifeq ($(FC),ifort)
   LAPACK = -L$(MKL_LIB) -I$(MKL_INC) -lmkl_lapack95_lp64 $(MKL_LIB)/libmkl_intel_lp64.a $(MKL_LIB)/libmkl_sequential.a $(MKL_LIB)/libmkl_core.a $(MKL_LIB)/libmkl_sequential.a $(MKL_LIB)/libmkl_core.a $(MKL_LIB)/libmkl_sequential.a $(MKL_LIB)/libmkl_core.a -lpthread
 
 endif
-ifeq ($(FC),"gfortran-9")
+ifeq ($(FC),"gfortran")
 
   # mac debug:
   # lldb <executable>
@@ -47,11 +47,11 @@ SIA2_OBJ := sia2_constants.o kei_hacks.o sia2_parameters.o sia2_state.o \
 OBJ1D  := sia2_constants.o kei_hacks.o sia2_parameters.o sia2_state.o \
   sia2_types.o sia2_grid.o sia2_flux_heat.o sia2_desalination.o\
   kei_ocncommon.o \
-  kei_icecommon.o kei_ecocommon.o \
+  kei_ecocommon.o \
   kei_ice.o kei_eco.o kei_init.o kei_fluxes.o \
   kei_subs1D.o kei_atm.o kei_ocn.o kei_kpp.o
 
-F901D  := kei_parameters.f90 kei_common.f90 kei_link.f90
+F901D  := kei_parameters.f90 kei_common.f90 kei_icecommon.f90 kei_link.f90
 
 
 FFLAGS :=  $(BUG)
@@ -62,7 +62,7 @@ FFLAGS :=  $(BUG)
 
 
 kei: $(OBJ1D)
-	f2py -c --f90exec="gfortran-9" --f90flags="$(FFLAGS) $(LAPACK)" $(OBJ1D) $(F901D) -m kei
+	f2py -c --f90exec="gfortran" --f90flags="$(FFLAGS) $(LAPACK)" $(OBJ1D) $(F901D) -m kei
 
 # compile routines
 kei_fluxes.o: kei_hacks.o
@@ -79,7 +79,7 @@ kei_init.o	: kei_ecocommon.o kei_parameters.o kei_common.o kei_icecommon.o
 	$(FC) -c $(FFLAGS) kei_init.f90
 
 # compile modules
-kei_link.o	: $(OBJ1D) kei_parameters.o kei_common.o
+kei_link.o	: $(OBJ1D) kei_parameters.o kei_common.o kei_icecommon.o
 	$(FC) -c $(FFLAGS) kei_link.f90 $(LAPACK)
 kei_ice.o	: kei_ice.f90 kei_hacks.o
 	$(FC) -c $(FFLAGS) kei_ice.f90

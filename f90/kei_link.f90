@@ -91,7 +91,7 @@ MODULE link
   REAL, save :: kforce(forcing_var_cnt)   !!! forcing data structure - revised for f2py
 
   !!! counters and helper variables
-  INTEGER, save :: i,ii,jptr,nt,ns_calls,ni,iaccum,nisteps,no, &
+  INTEGER, save :: i,ii,jptr,nt,ns_calls,nii,iaccum,nisteps,no, &
     ntlast,ntimelast,estep,top_f,top_unstable
   REAL, save :: DHCdt,DSCdt,zml,DHSdt, &
     HCold,DHC,rho_top,rho_bot, &
@@ -222,11 +222,56 @@ CONTAINS
     elseif (param == 'zml') then
       value = zml
 
+    elseif (param == 'hi') then
+      value = hice(0)
+    elseif (param == 'hs') then
+      value = hsn(0)
+    elseif (param == 'fice') then
+      value = fice
+
+    elseif (param == 'atm_flux_to_ocn_surface') then
+      value = atm_flux_to_ocn_surface
+
+    elseif (param == 'atm_flux_to_ice_surface') then
+      value = atm_flux_to_ice_surface
+    elseif (param == 'ice_ocean_bottom_flux') then
+      value = ice_ocean_bottom_flux
+    elseif (param == 'ice_ocean_bottom_flux_potential') then
+      value = ice_ocean_bottom_flux_potential
+    elseif (param == 'total_ice_melt') then
+      value = total_ice_melt
+    elseif (param == 'total_ice_freeze') then
+      value = total_ice_freeze
+    elseif (param == 'frazil_ice_volume') then
+      value = frazil_ice_volume
+    elseif (param == 'congelation_ice_volume') then
+      value = congelation_ice_volume
+    elseif (param == 'snow_ice_volume') then
+      value = snow_ice_volume
+    elseif (param == 'snow_precip_mass') then
+      value = snow_precip_mass
+
     else
         value = -99999.0
     endif
 
   END SUBROUTINE get_data_real
+
+!!! ************************************************************************
+  SUBROUTINE get_data_int(param,value)
+    CHARACTER (len=*), intent(in) :: param
+    INTEGER, intent(out) :: value
+
+    if (param == 'ni') then
+      value = ni_cur
+    elseif (param == 'ns') then
+      value = ns_cur
+
+    else
+        value = -99999
+    endif
+
+  END SUBROUTINE get_data_int
 
 
 !!! ************************************************************************
@@ -295,6 +340,43 @@ CONTAINS
     endif
 
   END SUBROUTINE get_nz_data
+
+!!! ************************************************************************
+  SUBROUTINE get_ice_data(param,ice_data)
+    CHARACTER (len=*), intent(in) :: param
+    REAL, INTENT(OUT) :: &
+      ice_data(nni)
+
+    if (param == 'dzi') then
+      ice_data = dzi
+    elseif (param == 'Ti') then
+      ice_data = Ti
+    elseif (param == 'Si') then
+      ice_data = Si
+
+    else
+      ice_data = -99999.0
+    endif
+
+  END SUBROUTINE get_ice_data
+
+
+!!! ************************************************************************
+  SUBROUTINE get_snow_data(param,snow_data)
+    CHARACTER (len=*), intent(in) :: param
+    REAL, INTENT(OUT) :: &
+      snow_data(nns)
+
+    if (param == 'dzs') then
+      snow_data = dzs
+    elseif (param == 'Ts') then
+      snow_data = Ts
+
+    else
+      snow_data = -99999.0
+    endif
+
+  END SUBROUTINE get_snow_data
 
 
 !!! ************************************************************************
@@ -432,7 +514,7 @@ SUBROUTINE KEI_compute_step(nt_in)
       flx(5) = -sflux(7,4,0)*Fl + sflux(8,4,0) !!! new frazil growth + melt potential
       !!! Integrate ice model with this forcing, for nisteps, each ndtice long
       nisteps = 0
-      DO ni = 1, ndtflx, ndtice
+      DO nii = 1, ndtflx, ndtice
         nisteps = nisteps + 1
         !write(6,*) 'ice flux and step',nisteps,Tfrz
         !!! increment hice and hsn get new fice and TI0
